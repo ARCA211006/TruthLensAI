@@ -22,10 +22,12 @@ started. The cache can always be rebuilt from the web, so resetting is safe.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import pickle
+import unicodedata
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -45,10 +47,10 @@ except Exception:  # pragma: no cover - exercised only when faiss is not install
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _ENTRY_FIELDS = (
     "text", "url", "title", "domain", "published_date", "date_source", "article_id", "chunk_id",
-    "extraction_method", "author", "search_query",
+    "extraction_method", "author", "search_query", "content_hash", "source_records", "last_seen_at",
 )
 
 
@@ -143,8 +145,15 @@ class FaissEvidenceStore:
         self.prune_expired()
 
     @staticmethod
-    def _entry_hash(url: str, text: str) -> str:
-        return f"{url}|{normalized_hash(text)}"
+    def _content_hash(text: str) -> str:
+        """Stable SHA-256 over normalized evidence text, independent of its source URL."""
+        normalized = " ".join(unicodedata.normalize("NFKC", text or "").casefold().split())
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _entry_hash(cls, url: str, text: str) -> str:
+        # URL is deliberately excluded: identical evidence from different pages is one chunk.
+        return f"chunk|{cls._content_hash(text)}"
 
     @staticmethod
     def _query_hash(query: str) -> str:
@@ -185,7 +194,9 @@ class FaissEvidenceStore:
 
     # --------------------------------------------------------------- expiry
     def _expired(self, entry: dict, now: datetime) -> bool:
-        if self.ttl_days <= 0:
+        # Evidence chunks are permanent. Only query anchors have a short routing lifetime;
+        # their linked chunks remain available and are freshness-scored on every reuse.
+        if entry.get("kind") != "query" or self.ttl_days <= 0:
             return False
         try:
             cached_at = datetime.fromisoformat(entry["cached_at"])
@@ -267,72 +278,127 @@ class FaissEvidenceStore:
             return []
 
     # ---------------------------------------------------------------- write
+
+    @staticmethod
+    def _source_record(chunk: dict) -> dict:
+        return {
+            "url": chunk.get("url"),
+            "domain": chunk.get("domain"),
+            "title": chunk.get("title"),
+            "published_date": chunk.get("published_date"),
+            "date_source": chunk.get("date_source"),
+            "author": chunk.get("author"),
+        }
+
     def add_chunks(self, chunks: List[dict], query: Optional[str] = None,
                    query_vector: Optional[np.ndarray] = None) -> int:
-        """Cache extracted chunks and, when ``query`` is given, a query anchor linking to them.
+        """Persist extracted chunks permanently and de-duplicate by SHA-256 content hash.
 
-        Snippets, empty text and duplicates are skipped. The index file is written once per call.
-        Returns the number of new *chunks* added."""
+        Duplicate text updates the existing chunk's source provenance and last-seen metadata
+        without adding a second vector. The seven-day TTL applies only to query anchors.
+        Returns the number of new evidence chunks added.
+        """
         with self._lock:
             if not self.available:
                 return 0
+
+            now_dt = _utcnow()
+            now = now_dt.isoformat()
             fresh: List[dict] = []
+            fresh_by_hash: Dict[str, dict] = {}
             keys: List[str] = []
-            seen = set()
-            for c in chunks:
-                text = (c.get("text") or "").strip()
-                url = c.get("url") or ""
-                if c.get("evidence_type") != "extracted" or not text or not url:
+            metadata_updated = False
+
+            for chunk in chunks:
+                text = (chunk.get("text") or "").strip()
+                url = chunk.get("url") or ""
+                if chunk.get("evidence_type") != "extracted" or not text or not url:
                     continue
-                h = self._entry_hash(url, text)
-                keys.append(h)
-                if h in self._hash_to_idx or h in seen:
+
+                key = self._entry_hash(url, text)
+                if key not in keys:
+                    keys.append(key)
+                source = self._source_record(chunk)
+
+                existing_idx = self._hash_to_idx.get(key)
+                if existing_idx is not None:
+                    existing = self.metadata[existing_idx]
+                    source_records = existing.setdefault("source_records", [])
+                    if not source_records and existing.get("url"):
+                        source_records.append(self._source_record(existing))
+                    if source not in source_records:
+                        source_records.append(source)
+                    existing["last_seen_at"] = now
+                    metadata_updated = True
                     continue
-                seen.add(h)
-                fresh.append(c)
-            need = [c for c in fresh if c.get("_embedding") is None]
+
+                if key in fresh_by_hash:
+                    primary = fresh_by_hash[key]
+                    if source not in primary["source_records"]:
+                        primary["source_records"].append(source)
+                    continue
+
+                item = dict(chunk)
+                item["content_hash"] = self._content_hash(text)
+                item["source_records"] = [source]
+                item["last_seen_at"] = now
+                fresh.append(item)
+                fresh_by_hash[key] = item
+
+            need = [item for item in fresh if item.get("_embedding") is None]
             if need:
                 if self.embedder is None or not self.embedder.available:
-                    fresh = [c for c in fresh if c.get("_embedding") is not None]
+                    fresh = [item for item in fresh if item.get("_embedding") is not None]
                 else:
                     try:
-                        vecs = self.embedder.encode([c["text"] for c in need])
-                        for c, v in zip(need, vecs):
-                            c["_embedding"] = v
+                        vectors = self.embedder.encode([item["text"] for item in need])
+                        for item, vector in zip(need, vectors):
+                            item["_embedding"] = vector
                     except EmbeddingError as exc:
                         logger.error("Not caching %d chunks, embedding failed: %s", len(need), exc)
-                        fresh = [c for c in fresh if c.get("_embedding") is not None]
+                        fresh = [item for item in fresh if item.get("_embedding") is not None]
 
-            now = _utcnow().isoformat()
-            vectors: List[np.ndarray] = []
             entries: List[dict] = []
-            for c in fresh:
-                entry: Dict[str, object] = {k: c.get(k) for k in _ENTRY_FIELDS}
+            vectors: List[np.ndarray] = []
+            for item in fresh:
+                entry: Dict[str, object] = {key: item.get(key) for key in _ENTRY_FIELDS}
                 entry.update(kind="chunk", evidence_type="extracted", cached_at=now)
                 entries.append(entry)
-                vectors.append(np.asarray(c["_embedding"], dtype="float32"))
+                vectors.append(np.asarray(item["_embedding"], dtype="float32"))
 
-            # Query anchor: new, or extend the existing one for the same query.
+            # Query anchors are the only entries governed by ttl_days. An expired anchor
+            # is refreshed in place; its evidence chunks are never removed with it.
             anchor_updated = False
             if query and query_vector is not None and keys:
-                qh = self._query_hash(query)
-                if qh in self._hash_to_idx:
-                    existing = self.metadata[self._hash_to_idx[qh]]
-                    merged = list(dict.fromkeys(list(existing.get("chunk_keys", [])) + keys))
+                query_key = self._query_hash(query)
+                unique_keys = list(dict.fromkeys(keys))
+                if query_key in self._hash_to_idx:
+                    existing = self.metadata[self._hash_to_idx[query_key]]
+                    merged = list(dict.fromkeys(list(existing.get("chunk_keys", [])) + unique_keys))
                     anchor_updated = merged != existing.get("chunk_keys")
                     existing["chunk_keys"] = merged
+                    if self._expired(existing, now_dt):
+                        existing["cached_at"] = now
+                        anchor_updated = True
                 else:
-                    entries.append({"kind": "query", "query": query, "chunk_keys": list(dict.fromkeys(keys)),
-                                    "cached_at": now, "text": query, "url": "query:"})
+                    entries.append({
+                        "kind": "query", "query": query, "chunk_keys": unique_keys,
+                        "cached_at": now, "text": query, "url": "query:",
+                    })
                     vectors.append(np.asarray(query_vector, dtype="float32"))
+
             if not entries and not anchor_updated:
+                if metadata_updated:
+                    self._persist()
                 return 0
+
             if entries:
                 start = len(self.metadata)
-                self.index.add(np.vstack(vectors))  # single call; metadata is extended only after it succeeds
+                self.index.add(np.vstack(vectors))
                 self.metadata.extend(entries)
-                for offset, e in enumerate(entries):
-                    self._hash_to_idx[self._meta_hash(e)] = start + offset
+                for offset, entry in enumerate(entries):
+                    self._hash_to_idx[self._meta_hash(entry)] = start + offset
+
             try:
                 self._persist()
             except Exception as exc:
