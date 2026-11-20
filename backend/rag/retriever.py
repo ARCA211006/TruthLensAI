@@ -218,16 +218,30 @@ class TeamARetrievalPipeline:
         meta["stage_timings_ms"]["faiss"] = round((time.perf_counter() - t) * 1000)
 
         pool: List[dict] = []
-        if hits and best >= s.faiss_similarity_threshold:
+        cached_chunks = [
+            self._hit_to_chunk(hit, i + 1)
+            for i, hit in enumerate(self._expand_hits(hits, s.faiss_similarity_threshold))
+        ]
+        fresh_cached_chunks = [
+            chunk for chunk in cached_chunks
+            if compute_recency_score(chunk.get("published_date"), s.undated_recency_score)
+            >= s.faiss_min_recency_score
+        ]
+        meta["fresh_cached_chunks"] = len(fresh_cached_chunks)
+        meta["faiss_min_recency_score"] = s.faiss_min_recency_score
+
+        if hits and best >= s.faiss_similarity_threshold and fresh_cached_chunks:
             meta["route"] = "faiss"
-            pool = [self._hit_to_chunk(h, i + 1) for i, h in enumerate(self._expand_hits(hits, s.faiss_similarity_threshold))]
+            pool = fresh_cached_chunks
         else:
+            # Permanent evidence is retained, but stale or undated evidence never suppresses
+            # a fresh SearXNG lookup. It remains a fallback if live search yields nothing.
             meta["route"] = "searxng"
             if query_text:
                 pool = self._web_chunks(query_text, queries, original_language, meta)
-            if not pool and hits:  # search unavailable/empty: fall back to the weaker cached evidence
+            if not pool and cached_chunks:
                 meta["route"] = "faiss_fallback"
-                pool = [self._hit_to_chunk(h, i + 1) for i, h in enumerate(self._expand_hits(hits, 0.0))]
+                pool = cached_chunks
 
         t = time.perf_counter()
         pool, dstats = dedupe_pool(
