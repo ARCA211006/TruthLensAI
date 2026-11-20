@@ -124,12 +124,15 @@ class TeamARetrievalPipeline:
             "search_engines": [], "origin": "faiss_cache", "source_type": "faiss_cache",
             "embedding_similarity": hit.get("embedding_similarity"), "chunk_id": hit.get("chunk_id") or f"{hit['url']}:{index}",
             "chunk_index": index, "cleanup_flags": [], "removed_chars": 0, "cached_at": hit.get("cached_at"),
+            "content_hash": hit.get("content_hash"), "source_records": hit.get("source_records", []),
+            "last_seen_at": hit.get("last_seen_at"),
         }
 
     @staticmethod
     def _to_evidence(c: dict) -> dict:
         return {
             "source_id": c["chunk_id"], "source_domain": c["domain"], "source_title": c["title"], "url": c["url"],
+            "content_hash": c.get("content_hash"), "source_records": c.get("source_records", []),
             "content": c["text"], "published_date": c.get("published_date"), "date_source": c.get("date_source"),
             "source_type": c["source_type"], "origin": c["origin"], "evidence_type": c["evidence_type"],
             "extraction_method": c["extraction_method"], "access_status": c["access_status"],
