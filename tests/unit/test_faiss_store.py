@@ -1,3 +1,4 @@
+import hashlib
 import json
 import pickle
 from datetime import datetime, timedelta, timezone
@@ -46,11 +47,19 @@ def test_index_and_metadata_stay_aligned_and_persist(tmp_path):
     assert reloaded.search_text("fact number 3", 1)[0]["text"] == "fact number 3"
 
 
-def test_duplicates_are_not_inserted_twice(tmp_path):
+def test_sha256_content_hash_deduplicates_across_source_urls_and_updates_provenance(tmp_path):
     s = store(tmp_path)
-    assert s.add_chunks([chunk("same text here")]) == 1
-    assert s.add_chunks([chunk("same text here"), chunk("Same   TEXT here!")]) == 0
+    first = chunk("same evidence text")
+    second = chunk("same evidence text", url="https://b.example/story")
+    assert s.add_chunks([first]) == 1
+    assert s.add_chunks([second]) == 0
     assert s.count == 1
+    entry = next(item for item in s.metadata if item.get("kind") == "chunk")
+    expected = hashlib.sha256("same evidence text".encode("utf-8")).hexdigest()
+    assert entry["content_hash"] == expected
+    assert {source["url"] for source in entry["source_records"]} == {
+        "https://a.com/1", "https://b.example/story"
+    }
 
 
 def test_snippets_empty_text_and_missing_url_are_never_cached(tmp_path):
@@ -69,14 +78,15 @@ def test_cached_embeddings_are_reused_not_recomputed(tmp_path):
     assert emb.calls == []
 
 
-def test_expired_entries_are_not_returned_and_are_pruned(tmp_path):
+def test_evidence_chunks_are_permanent_beyond_the_seven_day_anchor_ttl(tmp_path):
     s = store(tmp_path, ttl=7)
-    s.add_chunks([chunk("old evidence about covid"), chunk("fresh evidence about covid", idx=1)])
-    s.metadata[0]["cached_at"] = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
-    assert [h["text"] for h in s.search_text("evidence about covid", 5)] == ["fresh evidence about covid"]
-    assert s.prune_expired() == 1 and s.count == 1 and s.index.ntotal == 1
-    assert store(tmp_path).count == 1          # persisted
-    assert s.search_text("fresh evidence about covid", 1)[0]["embedding_similarity"] == pytest.approx(1.0, abs=1e-5)
+    s.add_chunks([chunk("old evidence about covid"), chunk("another old evidence item", idx=1)])
+    for entry in s.metadata:
+        entry["cached_at"] = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+    assert len(s.search_text("evidence about covid", 5)) == 2
+    assert s.prune_expired() == 0
+    assert s.count == 2 and s.index.ntotal == 2
+    assert store(tmp_path).count == 2
 
 
 def test_zero_ttl_disables_expiry(tmp_path):
@@ -167,12 +177,14 @@ def test_anchor_without_cacheable_chunks_is_not_created(tmp_path):
     assert s.count == 0
 
 
-def test_expired_anchor_is_ignored_and_pruned(tmp_path):
+def test_expired_anchor_is_ignored_and_pruned_but_its_evidence_is_kept(tmp_path):
     emb = FakeEmbedder()
     s = store(tmp_path, ttl=7, embedder=emb)
     qv = emb.encode(["old claim"])[0]
     s.add_chunks([chunk("passage")], query="old claim", query_vector=qv)
     for m in s.metadata:
         m["cached_at"] = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-    assert s.search(qv, 5) == []
-    assert s.prune_expired() == 2 and s.count == 0
+    assert not any(hit.get("kind") == "query" for hit in s.search(qv, 5))
+    assert s.prune_expired() == 1
+    assert s.count == 1 and s.index.ntotal == 1
+    assert store(tmp_path, embedder=emb).count == 1
