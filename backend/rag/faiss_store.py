@@ -326,8 +326,15 @@ class FaissEvidenceStore:
                     source_records = existing.setdefault("source_records", [])
                     if not source_records and existing.get("url"):
                         source_records.append(self._source_record(existing))
-                    if source not in source_records:
+                    prior = next((record for record in source_records if record.get("url") == source.get("url")), None)
+                    if prior is None:
                         source_records.append(source)
+                    else:
+                        prior.update({key: value for key, value in source.items() if value is not None})
+                    # Refresh non-content metadata when the incoming source has a known date.
+                    if source.get("published_date") and not existing.get("published_date"):
+                        existing["published_date"] = source["published_date"]
+                        existing["date_source"] = source.get("date_source")
                     existing["last_seen_at"] = now
                     metadata_updated = True
                     continue
