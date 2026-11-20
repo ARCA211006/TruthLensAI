@@ -18,14 +18,14 @@
 | Module | Responsibility |
 |---|---|
 | `query_builder.py` | Deterministic cleaning and query construction (English query, plus the original-language query for non-English claims). No LLM. |
-| `faiss_store.py` | FAISS cache (`IndexFlatIP`, cosine) of extracted evidence chunks and query anchors; manifest, TTL, aligned metadata |
+| `faiss_store.py` | FAISS store (`IndexFlatIP`, cosine) of permanent extracted evidence chunks and short-lived query anchors; SHA-256 content deduplication, manifest, aligned metadata |
 | `searxng_client.py` | SearXNG JSON API client, result normalisation, URL de-duplication |
 | `search_ranking.py` | `SearchRelevance = 0.70*MiniLM + 0.30*BM25` over title+snippet, Top 10 (max 3 per domain) |
 | `robots.py`, `safe_fetch.py`, `article_fetcher.py` | robots.txt policy, SSRF-safe fetching, Trafilatura extraction, snippet fallback |
 | `evidence_processing.py` | Chunking, prompt-injection and boilerplate cleanup, near-duplicate and syndication handling |
 | `scoring.py` | `R(d) = 0.40 Relevance + 0.20 Quality + 0.25 Credibility + 0.15 Recency`, Top-5 selection |
 | `domain_credibility.py` | Hardlist, MBFC cache (31 entries) and a heuristic fallback |
-| `retriever.py` | Orchestrator; `process_claim(claim, original_language, top_k, original_claim=None)` |
+| `retriever.py` | Orchestrator; `process_claim(claim, original_language, top_k, original_claim=None)`; stale cache evidence triggers SearXNG |
 
 ### Routing
 The claim is embedded and searched in FAISS. If the best cosine similarity is **>= 0.75**
@@ -34,7 +34,7 @@ is queried. 0.75 is a routing threshold only: it is not R(d) and not a truth pro
 The index holds two kinds of entries: evidence chunks and *query anchors* (the embedding of the claim
 that retrieved a batch of chunks, linked to them). A claim is a short sentence and chunks are long
 passages, so claim-to-chunk similarity is usually low; claim-to-earlier-claim similarity is a
-like-for-like comparison. Entries expire after `FAISS_CACHE_TTL_DAYS` (7). Search snippets are never cached.
+like-for-like comparison. Evidence chunks and their embeddings are retained permanently. Only query anchors expire after `FAISS_CACHE_TTL_DAYS` (7). On every reuse, publication-date recency is recalculated; evidence below `FAISS_MIN_RECENCY_SCORE` (default 0.60, the existing one-year recency boundary) triggers a fresh SearXNG lookup. Search snippets are never cached. The separate exact-normalized-claim verdict cache uses SHA-256 and `VERDICT_CACHE_TTL_DAYS` (7); there is no semantic claim-similarity matching.
 
 ### Evidence types
 `evidence_type` is `extracted` (full article text) or `snippet` (SearXNG title/snippet kept when robots.txt
@@ -52,7 +52,7 @@ Top 5 may mix strong, weak and snippet evidence so that Team B can reason over w
 most 2 chunks per URL, domain and syndication group are chosen, relaxed when there are too few candidates.
 Fewer than 5 items are returned (with `insufficient_evidence`) rather than inventing evidence.
 
-## Known limitations
+## Verdict cache\n\n`backend/services/verdict_cache.py` caches completed, verifiable responses by SHA-256 of the normalized exact claim. Entries expire after seven days. A cache hit reuses the previous verdict and evidence response; a miss runs Team A and Team B. No 90% or other semantic claim matching is performed.\n\n## Known limitations
 * The embedding model is English-centric (`all-MiniLM-L6-v2`). Non-English claims are translated to English
   before retrieval; the original-language query is only an extra search query.
 * SearXNG results depend on which engines are reachable; blocked engines are logged per request.
