@@ -4,7 +4,7 @@ from backend.services.verification_service import VerificationService
 
 
 class FakeRetriever:
-    def process_claim(self, claim, original_language, top_k=5):
+    def process_claim(self, claim, original_language, top_k=5, original_claim=None):
         return {"sub_claims": [claim], "evidence": [{"source_domain": "example.org", "combined_reliability": 0.8}],
                 "metadata": {"num_sources_kept": 1}}
 
@@ -28,3 +28,4 @@ def test_empty_claim_is_rejected():
         assert "non-empty" in str(error)
     else:
         raise AssertionError("empty claims must be rejected")
+
