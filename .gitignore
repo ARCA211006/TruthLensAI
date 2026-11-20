@@ -7,6 +7,9 @@ __pycache__/
 indexes/*.faiss
 indexes/*.bin
 indexes/*.pkl
-data/processed/web_evidence_cache.json
 frontend/data/mock-data.js
 .venv/
+indexes/*.manifest.json
+indexes/*.legacy-*
+indexes/*.tmp
+
