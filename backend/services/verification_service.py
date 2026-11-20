@@ -25,7 +25,8 @@ class VerificationService:
              else detect_language(original_claim)
          )
         normalized_claim = translate_to_english(original_claim, language).strip()
-        retrieval = self.retriever.process_claim(normalized_claim, original_language=language,top_k = top_k)
+        retrieval = self.retriever.process_claim(
+            normalized_claim, original_language=language, top_k=top_k, original_claim=original_claim)
         result = run_graph(
             claim=normalized_claim,
             evidence=retrieval["evidence"],
@@ -44,7 +45,8 @@ class VerificationService:
         ocr = process_image_input(image_bytes)
         if not ocr["english_text"].strip():
             raise ValueError("OCR could not extract legible text from the image.")
-        retrieval = self.retriever.process_claim(ocr["english_text"], original_language=ocr["detected_language"])
+        retrieval = self.retriever.process_claim(
+            ocr["english_text"], original_language=ocr["detected_language"], original_claim=ocr["original_text"])
         result = run_graph(
             claim=ocr["english_text"], evidence=retrieval["evidence"],
             original_claim=ocr["original_text"], original_language=ocr["detected_language"],
@@ -63,9 +65,13 @@ class VerificationService:
 
     @staticmethod
     def _require_verifiable_sources(retrieval: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
-        """Do not present local dataset matches as verified web evidence."""
+        """Never issue a verdict when retrieval produced no evidence at all.
+
+        Cached web evidence counts as evidence (the old rule only accepted fresh "web" items and
+        wrongly turned every repeated claim into UNVERIFIABLE).
+        """
         metadata = retrieval.get("metadata", {})
-        if "num_live_web_sources" not in metadata or metadata["num_live_web_sources"] > 0:
+        if retrieval.get("evidence") or metadata.get("num_sources_kept", 1) > 0:
             return result
 
         return {
@@ -73,8 +79,8 @@ class VerificationService:
             "verdict": "UNVERIFIABLE",
             "final_confidence": 0.0,
             "justification": (
-                "No live web sources were retrieved. Local dataset matches are "
-                "contextual only and do not verify this claim."
+                "No evidence could be retrieved for this claim (the search service returned nothing "
+                "usable). A verdict would be unsupported."
             ),
             "recommendation": "Verify independently using credible, named sources.",
         }
@@ -100,3 +106,4 @@ class VerificationService:
             "coverage_score": result.get("coverage_score", 0),
             "rounds_executed": result.get("rounds_executed", 0),
         }
+
