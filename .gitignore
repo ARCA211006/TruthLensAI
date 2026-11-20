@@ -12,4 +12,7 @@ frontend/data/mock-data.js
 indexes/*.manifest.json
 indexes/*.legacy-*
 indexes/*.tmp
+indexes/*.sqlite3
+indexes/*.sqlite3-wal
+indexes/*.sqlite3-shm
 
