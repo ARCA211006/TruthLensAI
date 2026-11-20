@@ -9,6 +9,8 @@ import hashlib
 import json
 import sqlite3
 import threading
+import time
+from contextlib import closing
 import unicodedata
 from pathlib import Path
 from typing import Any, Optional
@@ -20,7 +22,7 @@ class VerdictCache:
         self.ttl_days = max(0, int(ttl_days))
         self._lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             db.execute(
                 """CREATE TABLE IF NOT EXISTS verdict_cache (
                     claim_hash TEXT PRIMARY KEY,
@@ -45,8 +47,8 @@ class VerdictCache:
         if self.ttl_days <= 0:
             return None
         key = self.claim_hash(claim)
-        now = int(__import__("time").time())
-        with self._lock, self._connect() as db:
+        now = int(time.time())
+        with self._lock, closing(self._connect()) as db, db:
             row = db.execute(
                 "SELECT response_json, expires_at FROM verdict_cache WHERE claim_hash = ?",
                 (key,),
@@ -66,13 +68,11 @@ class VerdictCache:
     def set(self, claim: str, response: dict[str, Any]) -> None:
         if self.ttl_days <= 0:
             return
-        import time
-
         now = int(time.time())
         expires = now + self.ttl_days * 24 * 60 * 60
         payload = json.dumps(response, ensure_ascii=False, separators=(",", ":"))
         key = self.claim_hash(claim)
-        with self._lock, self._connect() as db:
+        with self._lock, closing(self._connect()) as db, db:
             db.execute(
                 """INSERT INTO verdict_cache(claim_hash, response_json, created_at, expires_at)
                    VALUES (?, ?, ?, ?)
