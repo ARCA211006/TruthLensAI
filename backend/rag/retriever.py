@@ -232,8 +232,12 @@ class TeamARetrievalPipeline:
         ]
         meta["fresh_cached_chunks"] = len(fresh_cached_chunks)
         meta["faiss_min_recency_score"] = s.faiss_min_recency_score
+        # The cache must be able to satisfy the requested evidence count; otherwise
+        # search live rather than silently returning a partial cached set.
+        cache_sufficient = len(fresh_cached_chunks) >= k
+        meta["faiss_cache_sufficient"] = cache_sufficient
 
-        if hits and best >= s.faiss_similarity_threshold and fresh_cached_chunks:
+        if hits and best >= s.faiss_similarity_threshold and cache_sufficient:
             meta["route"] = "faiss"
             pool = fresh_cached_chunks
         else:
