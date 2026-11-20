@@ -13,7 +13,8 @@ Two kinds of entries share the index:
     paraphrased claims.
 
 Metric: ``IndexFlatIP`` over L2-normalised MiniLM vectors, so the inner product IS cosine similarity
-(0.75 is a cosine threshold). Entries expire after ``ttl_days``.
+(0.75 is a cosine threshold). Evidence chunks and embeddings are permanent; only query anchors expire
+after ``ttl_days``. The retriever recalculates publication-date freshness before reusing cached chunks.
 
 Safety: a ``<index>.manifest.json`` records schema version, embedding model, dimension and entry
 count. On load the index size, metadata length and manifest must all agree and the model must match;
@@ -27,8 +28,8 @@ import json
 import logging
 import os
 import pickle
-import unicodedata
 import threading
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
