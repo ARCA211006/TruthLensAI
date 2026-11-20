@@ -51,6 +51,7 @@ class RetrievalSettings:
     # --- FAISS cache routing -------------------------------------------
     faiss_similarity_threshold: float = 0.75  # routing threshold only (cosine); NOT R(d)
     faiss_cache_ttl_days: int = 7
+    faiss_min_recency_score: float = 0.60  # below the existing one-year recency boundary is stale
     faiss_search_top_n: int = 30
     cache_min_relevance: float = 0.25         # chunks below this are not cached
 
@@ -111,6 +112,7 @@ def load_retrieval_settings() -> RetrievalSettings:
         max_query_chars=_env_int("MAX_QUERY_CHARS", d.max_query_chars),
         faiss_similarity_threshold=_env_float("FAISS_SIMILARITY_THRESHOLD", d.faiss_similarity_threshold),
         faiss_cache_ttl_days=_env_int("FAISS_CACHE_TTL_DAYS", d.faiss_cache_ttl_days),
+        faiss_min_recency_score=_env_float("FAISS_MIN_RECENCY_SCORE", d.faiss_min_recency_score),
         faiss_search_top_n=_env_int("FAISS_SEARCH_TOP_N", d.faiss_search_top_n),
         cache_min_relevance=_env_float("CACHE_MIN_RELEVANCE", d.cache_min_relevance),
         search_top_n=_env_int("SEARCH_TOP_N", d.search_top_n),
