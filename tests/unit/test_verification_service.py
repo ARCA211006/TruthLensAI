@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 from backend.services.verification_service import VerificationService
+from backend.services.verdict_cache import VerdictCache
 
 
 class FakeRetriever:
@@ -10,18 +11,21 @@ class FakeRetriever:
 
 
 @patch("backend.services.verification_service.run_graph")
-def test_text_verification_composes_existing_pipeline(mock_graph):
+def test_text_verification_composes_existing_pipeline(mock_graph, tmp_path):
     mock_graph.return_value = {"verdict": "TRUE", "final_confidence": 85, "justification": "Supported.",
                                "recommendation": "Likely accurate", "persona_insights": {}, "rounds_executed": 1}
-    service = VerificationService(FakeRetriever(), 1024)
+    service = VerificationService(FakeRetriever(), 1024, VerdictCache(tmp_path / "verdicts.sqlite3"))
     result = service.verify_text("A verifiable claim.")
     assert result["verdict"] == "TRUE"
     assert result["evidence"][0]["source_domain"] == "example.org"
     mock_graph.assert_called_once()
+    cached = service.verify_text("A verifiable claim.")
+    assert cached["verdict"] == "TRUE" and cached["retrieval_metadata"]["verdict_cache_hit"] is True
+    mock_graph.assert_called_once()
 
 
-def test_empty_claim_is_rejected():
-    service = VerificationService(FakeRetriever(), 1024)
+def test_empty_claim_is_rejected(tmp_path):
+    service = VerificationService(FakeRetriever(), 1024, VerdictCache(tmp_path / "verdicts.sqlite3"))
     try:
         service.verify_text("   ")
     except ValueError as error:
