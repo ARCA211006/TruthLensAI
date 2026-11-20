@@ -10,10 +10,11 @@ claim -> Team A (evidence retrieval) -> Team B (LangGraph multi-agent reasoning)
 
 ```
 claim -> query building -> FAISS cache lookup
-      -> similarity >= 0.75 : reuse cached evidence
-      -> otherwise          : SearXNG -> MiniLM + BM25 ranking -> Top 10 -> robots.txt -> fetch
+      -> similarity >= 0.75 + fresh evidence : reuse cached evidence
+      -> otherwise                           : SearXNG -> MiniLM + BM25 ranking -> Top 10 -> robots.txt -> fetch
                               -> Trafilatura (snippet fallback) -> chunk -> injection cleanup
-      -> de-duplicate -> R(d) scoring -> Top 5 -> Team B
+      -> SHA-256 de-duplicate -> R(d) scoring -> Top 5 -> Team B
+\nCompleted exact-claim verdicts are cached for 7 days; evidence chunks and embeddings are retained permanently.
 ```
 
 See [architecture.md](architecture.md) for the details.
