@@ -15,4 +15,4 @@ langgraph>=0.2
 langchain-groq>=0.2
 python-telegram-bot>=21.0
 pytest>=8.0
-
+gunicorn>=22.0
